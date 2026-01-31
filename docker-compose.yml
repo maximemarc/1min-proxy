@@ -1,0 +1,10 @@
+services:
+  1min-proxy:
+    build: .
+    container_name: 1min-proxy
+    restart: always
+    ports:
+      - "3456:3456"
+    environment:
+      - ONEMIN_API_KEY=${ONEMIN_API_KEY}
+      - PORT=3456
