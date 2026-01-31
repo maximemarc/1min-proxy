@@ -1,224 +1,141 @@
+/**
+ * 1min-proxy - OpenAI-compatible proxy for 1min.ai
+ * 
+ * Provides full OpenAI API compatibility while routing requests
+ * through the 1min.ai API for access to multiple AI models.
+ */
+
 import express from 'express';
 import { config } from 'dotenv';
+import { createRouter } from './src/router.js';
+
 config();
 
 const app = express();
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3456;
 const ONEMIN_API_KEY = process.env.ONEMIN_API_KEY;
 
-// Model mapping: OpenAI format -> 1min.ai format
-const MODEL_MAP = {
-  // Claude models
-  'claude-3-5-haiku-20241022': 'claude-3-5-haiku-20241022',
-  'claude-3-5-sonnet-20241022': 'claude-3-5-sonnet-20241022',
-  'claude-3-opus-20240229': 'claude-3-opus-20240229',
-  'claude-haiku': 'claude-3-5-haiku-20241022',
-  'claude-sonnet': 'claude-3-5-sonnet-20241022',
-  'claude-opus': 'claude-3-opus-20240229',
-  // GPT models
-  'gpt-4o': 'gpt-4o',
-  'gpt-4o-mini': 'gpt-4o-mini',
-  'gpt-4-turbo': 'gpt-4-turbo',
-  'gpt-4': 'gpt-4',
-  'gpt-3.5-turbo': 'gpt-3.5-turbo',
-  // Gemini
-  'gemini-pro': 'gemini-1.5-pro',
-  'gemini-1.5-pro': 'gemini-1.5-pro',
-  'gemini-1.5-flash': 'gemini-1.5-flash',
-  // Mistral
-  'mistral-large': 'mistral-large-latest',
-  'mistral-medium': 'mistral-medium-latest',
-  // Llama
-  'llama-3.1-405b': 'llama-3.1-405b-instruct',
-  'llama-3.1-70b': 'llama-3.1-70b-instruct',
-};
+// ==================== MIDDLEWARE ====================
 
-// Convert OpenAI messages to 1min.ai prompt
-function convertMessages(messages) {
-  // Get the last user message as prompt
-  const userMessages = messages.filter(m => m.role === 'user');
-  const lastUserMessage = userMessages[userMessages.length - 1];
+// API Key middleware - use env var or Authorization header
+app.use((req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const headerKey = authHeader?.replace('Bearer ', '');
+  req.apiKey = headerKey || ONEMIN_API_KEY;
   
-  // Build context from previous messages
-  let context = '';
-  for (const msg of messages.slice(0, -1)) {
-    if (msg.role === 'system') {
-      context += `System: ${msg.content}\n\n`;
-    } else if (msg.role === 'user') {
-      context += `User: ${msg.content}\n\n`;
-    } else if (msg.role === 'assistant') {
-      context += `Assistant: ${msg.content}\n\n`;
-    }
+  if (!req.apiKey && req.path !== '/health' && req.path !== '/') {
+    return res.status(401).json({ error: { message: 'Missing API key' } });
   }
   
-  let prompt = lastUserMessage?.content || '';
-  if (context) {
-    prompt = `${context}User: ${prompt}`;
-  }
-  
-  return prompt;
-}
-
-// OpenAI-compatible chat completions endpoint
-app.post('/v1/chat/completions', async (req, res) => {
-  try {
-    const { model, messages, stream = false } = req.body;
-    const apiKey = req.headers.authorization?.replace('Bearer ', '') || ONEMIN_API_KEY;
-    
-    if (!apiKey) {
-      return res.status(401).json({ error: { message: 'Missing API key' } });
-    }
-    
-    const mappedModel = MODEL_MAP[model] || model;
-    const prompt = convertMessages(messages);
-    
-    console.log(`[1min-proxy] Request: model=${model} -> ${mappedModel}, stream=${stream}`);
-    
-    const oneminPayload = {
-      type: 'CHAT_WITH_AI',
-      model: mappedModel,
-      promptObject: {
-        prompt: prompt,
-        isMixed: false,
-        webSearch: false
-      }
-    };
-    
-    const oneminUrl = stream 
-      ? 'https://api.1min.ai/api/features?isStreaming=true'
-      : 'https://api.1min.ai/api/features';
-    
-    const response = await fetch(oneminUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'API-KEY': apiKey
-      },
-      body: JSON.stringify(oneminPayload)
-    });
-    
-    if (!response.ok) {
-      const error = await response.text();
-      console.error(`[1min-proxy] Error from 1min.ai: ${response.status} ${error}`);
-      return res.status(response.status).json({ error: { message: error } });
-    }
-    
-    if (stream) {
-      // Streaming response
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      
-      const messageId = `chatcmpl-${Date.now()}`;
-      
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          buffer += decoder.decode(value, { stream: true });
-          
-          // Send as OpenAI SSE format
-          const chunk = {
-            id: messageId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: model,
-            choices: [{
-              index: 0,
-              delta: { content: buffer },
-              finish_reason: null
-            }]
-          };
-          
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-          buffer = '';
-        }
-        
-        // Send final chunk
-        const finalChunk = {
-          id: messageId,
-          object: 'chat.completion.chunk',
-          created: Math.floor(Date.now() / 1000),
-          model: model,
-          choices: [{
-            index: 0,
-            delta: {},
-            finish_reason: 'stop'
-          }]
-        };
-        res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
-        
-      } catch (err) {
-        console.error('[1min-proxy] Stream error:', err);
-        res.end();
-      }
-      
-    } else {
-      // Non-streaming response
-      const data = await response.json();
-      const content = data.aiRecord?.aiRecordDetail?.resultObject || 
-                     data.result || 
-                     data.response || 
-                     JSON.stringify(data);
-      
-      const openaiResponse = {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: [{
-          index: 0,
-          message: {
-            role: 'assistant',
-            content: typeof content === 'string' ? content : JSON.stringify(content)
-          },
-          finish_reason: 'stop'
-        }],
-        usage: {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
-        }
-      };
-      
-      res.json(openaiResponse);
-    }
-    
-  } catch (err) {
-    console.error('[1min-proxy] Error:', err);
-    res.status(500).json({ error: { message: err.message } });
-  }
+  next();
 });
 
-// Models endpoint
-app.get('/v1/models', (req, res) => {
-  const models = Object.keys(MODEL_MAP).map(id => ({
-    id,
-    object: 'model',
-    created: Date.now(),
-    owned_by: '1min-proxy'
-  }));
-  res.json({ object: 'list', data: models });
+// Logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[${req.method}] ${req.path} - ${res.statusCode} (${duration}ms)`);
+  });
+  next();
 });
+
+// ==================== ROUTES ====================
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', proxy: '1min-proxy' });
+  res.json({ 
+    status: 'ok', 
+    proxy: '1min-proxy',
+    version: '2.0.0',
+    endpoints: {
+      openai: [
+        '/v1/chat/completions',
+        '/v1/images/generations',
+        '/v1/images/variations',
+        '/v1/audio/speech',
+        '/v1/audio/transcriptions',
+        '/v1/audio/translations',
+        '/v1/embeddings',
+        '/v1/models',
+      ],
+      native: [
+        '/api/features',
+        '/api/features/stream',
+        '/api/conversations',
+        '/api/assets',
+        '/api/image/*',
+        '/api/audio/*',
+        '/api/video/*',
+      ],
+    },
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`[1min-proxy] Running on http://localhost:${PORT}`);
-  console.log(`[1min-proxy] OpenAI-compatible endpoint: http://localhost:${PORT}/v1/chat/completions`);
-  if (!ONEMIN_API_KEY) {
-    console.log('[1min-proxy] Warning: ONEMIN_API_KEY not set, will require Authorization header');
-  }
+// Root info
+app.get('/', (req, res) => {
+  res.json({
+    name: '1min-proxy',
+    description: 'OpenAI-compatible proxy for 1min.ai API',
+    version: '2.0.0',
+    docs: 'https://github.com/maximemarc/1min-proxy',
+    health: '/health',
+    openai: '/v1/chat/completions',
+  });
 });
+
+// Mount router with API key from request
+app.use((req, res, next) => {
+  const router = createRouter(req.apiKey);
+  router(req, res, next);
+});
+
+// ==================== ERROR HANDLING ====================
+
+app.use((err, req, res, next) => {
+  console.error('[error]', err);
+  res.status(500).json({
+    error: {
+      message: err.message || 'Internal server error',
+      type: 'server_error',
+    },
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    error: {
+      message: `Endpoint ${req.method} ${req.path} not found`,
+      type: 'invalid_request_error',
+    },
+  });
+});
+
+// ==================== START ====================
+
+app.listen(PORT, () => {
+  console.log('');
+  console.log('  ╔═══════════════════════════════════════╗');
+  console.log('  ║         1min-proxy v2.0.0             ║');
+  console.log('  ║   OpenAI-compatible 1min.ai proxy     ║');
+  console.log('  ╚═══════════════════════════════════════╝');
+  console.log('');
+  console.log(`  🚀 Server:     http://localhost:${PORT}`);
+  console.log(`  📡 OpenAI:     http://localhost:${PORT}/v1/chat/completions`);
+  console.log(`  🎨 Images:     http://localhost:${PORT}/v1/images/generations`);
+  console.log(`  🔊 Audio:      http://localhost:${PORT}/v1/audio/speech`);
+  console.log(`  📋 Models:     http://localhost:${PORT}/v1/models`);
+  console.log('');
+  
+  if (!ONEMIN_API_KEY) {
+    console.log('  ⚠️  ONEMIN_API_KEY not set - requires Authorization header');
+  } else {
+    console.log('  ✅ API Key configured');
+  }
+  console.log('');
+});
+
+export default app;
