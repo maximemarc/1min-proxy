@@ -38,6 +38,18 @@ jobs:
       - name: Test Docker image
         run: |
           docker run -d --name test-proxy -p 3456:3456 -e ONEMIN_API_KEY=test 1min-proxy
-          sleep 3
-          curl -f http://localhost:3456/health || exit 1
+          echo "Waiting for container to start..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:3456/health > /dev/null 2>&1; then
+              echo "Container is healthy!"
+              docker logs test-proxy
+              docker stop test-proxy
+              exit 0
+            fi
+            echo "Attempt $i/30..."
+            sleep 1
+          done
+          echo "Container failed to start"
+          docker logs test-proxy
           docker stop test-proxy
+          exit 1
