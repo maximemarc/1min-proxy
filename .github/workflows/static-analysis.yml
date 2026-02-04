@@ -1,0 +1,79 @@
+name: Static Analysis
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run weekly on Sundays at 00:00 UTC
+    - cron: '0 0 * * 0'
+
+jobs:
+  static-analysis:
+    runs-on: ubuntu-latest
+    name: Static Code Analysis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for circular dependencies
+        run: |
+          echo "🔍 Checking for circular dependencies..."
+          npm run analyze:circular
+
+      - name: Check for unused dependencies
+        run: |
+          echo "📦 Checking for unused dependencies..."
+          npm run analyze:deps
+
+      - name: Run Knip analysis
+        run: |
+          echo "✂️ Running Knip to find unused code..."
+          npm run analyze:unused || true
+
+      - name: Generate dependency graph
+        run: |
+          echo "📊 Generating dependency graph..."
+          npx madge --image dependency-graph.svg src/ || true
+
+      - name: Upload dependency graph
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-graph
+          path: dependency-graph.svg
+          if-no-files-found: ignore
+
+  security-audit:
+    runs-on: ubuntu-latest
+    name: Security Audit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          echo "🔒 Running security audit..."
+          npm audit --audit-level=moderate || true
+
+      - name: Check for outdated dependencies
+        run: |
+          echo "📅 Checking for outdated dependencies..."
+          npm outdated || true

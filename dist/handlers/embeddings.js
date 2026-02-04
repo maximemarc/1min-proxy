@@ -1,0 +1,23 @@
+import { NotImplementedError } from '../utils/errors.js';
+import { logger } from '../utils/logger.js';
+export class EmbeddingsHandler {
+    _api;
+    // @ts-expect-error - API client reserved for future use
+    constructor(_api) {
+        this._api = _api;
+    }
+    /**
+     * Handle embeddings creation (POST /v1/embeddings)
+     */
+    async create(req, res) {
+        const { model = 'text-embedding-ada-002', input } = req.body;
+        const inputLength = Array.isArray(input) ? input.length : 1;
+        logger.info({ model, inputLength }, '[embeddings] Processing request');
+        // 1min.ai doesn't seem to have embeddings API
+        const error = new NotImplementedError('Embeddings');
+        res.status(error.statusCode).json(error.toJSON());
+    }
+}
+// Default export for compatibility
+export { EmbeddingsHandler as default };
+//# sourceMappingURL=embeddings.js.map

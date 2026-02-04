@@ -1,0 +1,24 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "entry": ["src/server.ts"],
+  "project": ["src/**/*.ts"],
+  "ignore": [
+    "src/__tests__/**/*.ts",
+    "src/utils/__tests__/**/*.ts",
+    "src/types/**/*.ts",
+    "dist/**/*"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "ignoreDependencies": [
+    "@types/node",
+    "@types/express",
+    "pino-pretty",
+    "@vitest/coverage-v8",
+    "globals"
+  ],
+ "rules": {
+    "enumMembers": "off",
+    "types": "off",
+    "exports": "warn"
+  }
+}
